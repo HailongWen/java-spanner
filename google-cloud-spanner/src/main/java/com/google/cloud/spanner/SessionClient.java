@@ -151,8 +151,8 @@ class SessionClient implements AutoCloseable {
   }
 
   /**
-   * Callback interface to be used for BatchCreateSessions. When sessions become available or
-   * session creation fails, one of the callback methods will be called.
+   * Callback interface to be used for Sessions. When sessions become available or session creation
+   * fails, one of the callback methods will be called.
    */
   interface SessionConsumer {
     /** Called when a session has been created and is ready for use. */
@@ -215,10 +215,48 @@ class SessionClient implements AutoCloseable {
                   spanner.getOptions().getDatabaseRole(),
                   spanner.getOptions().getSessionLabels(),
                   options);
-      return new SessionImpl(spanner, session.getName(), options);
+      SessionReference sessionReference =
+          new SessionReference(
+              session.getName(), session.getCreateTime(), session.getMultiplexed(), options);
+      return new SessionImpl(spanner, sessionReference);
     } catch (RuntimeException e) {
       span.setStatus(e);
       throw e;
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Create a multiplexed session and returns it to the given {@link SessionConsumer}. A multiplexed
+   * session is not affiliated with any GRPC channel. The given {@link SessionConsumer} is
+   * guaranteed to eventually get exactly 1 multiplexed session unless an error occurs. In case of
+   * an error on the gRPC calls, the consumer will receive one {@link
+   * SessionConsumer#onSessionCreateFailure(Throwable, int)} calls with the error.
+   *
+   * @param consumer The {@link SessionConsumer} to use for callbacks when sessions are available.
+   */
+  void createMultiplexedSession(SessionConsumer consumer) {
+    ISpan span = spanner.getTracer().spanBuilder(SpannerImpl.CREATE_MULTIPLEXED_SESSION);
+    try (IScope s = spanner.getTracer().withSpan(span)) {
+      com.google.spanner.v1.Session session =
+          spanner
+              .getRpc()
+              .createSession(
+                  db.getName(),
+                  spanner.getOptions().getDatabaseRole(),
+                  spanner.getOptions().getSessionLabels(),
+                  null,
+                  true);
+      SessionImpl sessionImpl =
+          new SessionImpl(
+              spanner,
+              new SessionReference(
+                  session.getName(), session.getCreateTime(), session.getMultiplexed(), null));
+      consumer.onSessionReady(sessionImpl);
+    } catch (Throwable t) {
+      span.setStatus(t);
+      consumer.onSessionCreateFailure(t, 1);
     } finally {
       span.end();
     }
@@ -311,7 +349,14 @@ class SessionClient implements AutoCloseable {
       span.end();
       List<SessionImpl> res = new ArrayList<>(sessionCount);
       for (com.google.spanner.v1.Session session : sessions) {
-        res.add(new SessionImpl(spanner, session.getName(), options));
+        res.add(
+            new SessionImpl(
+                spanner,
+                new SessionReference(
+                    session.getName(),
+                    session.getCreateTime(),
+                    session.getMultiplexed(),
+                    options)));
       }
       return res;
     } catch (RuntimeException e) {
@@ -327,6 +372,6 @@ class SessionClient implements AutoCloseable {
     synchronized (this) {
       options = optionMap(SessionOption.channelHint(sessionChannelCounter++));
     }
-    return new SessionImpl(spanner, name, options);
+    return new SessionImpl(spanner, new SessionReference(name, options));
   }
 }
