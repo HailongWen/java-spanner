@@ -356,8 +356,14 @@ public class GapicSpannerRpc implements SpannerRpc {
                           options.getScopedCredentials(), NoCredentials.getInstance()));
       String directPathXdsEnv = System.getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS");
       boolean isAttemptDirectPathXds = Boolean.parseBoolean(directPathXdsEnv);
+      System.out.println("hailongwen: options.isAttemptDirectPath()="
+          + options.isAttemptDirectPath());
+      System.out.println("hailongwen: scoped credential="
+          + !Objects.equals(options.getScopedCredentials(), NoCredentials.getInstance()));
+      System.out.println("hailongwen: isAttemptDirectPathXds=" + isAttemptDirectPathXds);
       if (isAttemptDirectPathXds) {
         defaultChannelProviderBuilder.setAttemptDirectPathXds();
+        System.out.println("hailongwen: Entered setAttemptDirectPathXds");
       }
       if (options.isUseVirtualThreads()) {
         ExecutorService executor =
