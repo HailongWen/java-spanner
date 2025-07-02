@@ -187,6 +187,7 @@ import io.grpc.Context;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.MethodDescriptor;
 import io.opencensus.metrics.Metrics;
+import io.opentelemetry.api.trace.Span;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
@@ -2042,10 +2043,11 @@ public class GapicSpannerRpc implements SpannerRpc {
       }
     }
     // Plugin customized reqId logic
-    long nanos = System.nanoTime();
+    String nanos = String.valueOf(System.currentTimeMillis() * 1000000 + (System.nanoTime() % 1000000));
     Map<String, List<String>> withReqId =
         ImmutableMap.of(XGoogSpannerRequestId.REQUEST_HEADER_KEY.name(),
-            Collections.singletonList(String.valueOf(nanos)));
+            Collections.singletonList(nanos));
+    Span.current().setAttribute("requestId", nanos);
     context = context.withExtraHeaders(withReqId);
     //if (options != null) {
     //  context = withRequestId(context, options);

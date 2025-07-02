@@ -106,14 +106,14 @@ class BuiltInMetricsRecorder extends OpenTelemetryMetricsRecorder {
     io.opentelemetry.api.common.Attributes otelAttributes = toOtelAttributes(attributes);
     if (gfeLatency != null) {
       gfeLatencyRecorder.record(gfeLatency, otelAttributes);
-      Span.current().addEvent("gfe: " + gfeLatency);
+      Span.current().setAttribute("gfe", gfeLatency);
     }
     if (gfeHeaderMissingCount > 0) {
       gfeHeaderMissingCountRecorder.add(gfeHeaderMissingCount, otelAttributes);
     }
     if (afeLatency != null) {
       afeLatencyRecorder.record(afeLatency, otelAttributes);
-      Span.current().addEvent("afe: " + afeLatency);
+      Span.current().setAttribute("afe", afeLatency);
     }
     if (afeHeaderMissingCount > 0) {
       afeHeaderMissingCountRecorder.add(afeHeaderMissingCount, otelAttributes);
