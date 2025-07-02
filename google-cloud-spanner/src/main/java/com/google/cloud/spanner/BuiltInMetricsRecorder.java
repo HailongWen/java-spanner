@@ -25,6 +25,7 @@ import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.Span;
 import java.util.Map;
 
 /**
@@ -105,12 +106,14 @@ class BuiltInMetricsRecorder extends OpenTelemetryMetricsRecorder {
     io.opentelemetry.api.common.Attributes otelAttributes = toOtelAttributes(attributes);
     if (gfeLatency != null) {
       gfeLatencyRecorder.record(gfeLatency, otelAttributes);
+      Span.current().addEvent("gfe: " + gfeLatency);
     }
     if (gfeHeaderMissingCount > 0) {
       gfeHeaderMissingCountRecorder.add(gfeHeaderMissingCount, otelAttributes);
     }
     if (afeLatency != null) {
       afeLatencyRecorder.record(afeLatency, otelAttributes);
+      Span.current().addEvent("afe: " + afeLatency);
     }
     if (afeHeaderMissingCount > 0) {
       afeHeaderMissingCountRecorder.add(afeHeaderMissingCount, otelAttributes);

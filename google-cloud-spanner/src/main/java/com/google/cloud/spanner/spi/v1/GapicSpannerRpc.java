@@ -2041,9 +2041,16 @@ public class GapicSpannerRpc implements SpannerRpc {
         context = context.withChannelAffinity(affinity.intValue());
       }
     }
-    if (options != null) {
-      context = withRequestId(context, options);
-    }
+    // Plugin customized reqId logic
+    long nanos = System.nanoTime();
+    Map<String, List<String>> withReqId =
+        ImmutableMap.of(XGoogSpannerRequestId.REQUEST_HEADER_KEY.name(),
+            Collections.singletonList(String.valueOf(nanos)));
+    context = context.withExtraHeaders(withReqId);
+    //if (options != null) {
+    //  context = withRequestId(context, options);
+    //}
+
     context = context.withExtraHeaders(metadataProvider.newExtraHeaders(resource, projectName));
     if (routeToLeader && leaderAwareRoutingEnabled) {
       context = context.withExtraHeaders(metadataProvider.newRouteToLeaderHeader());
