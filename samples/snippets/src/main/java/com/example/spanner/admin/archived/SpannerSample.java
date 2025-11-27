@@ -20,18 +20,24 @@ import static com.google.cloud.spanner.Type.StructField;
 
 import com.google.api.gax.longrunning.OperationFuture;
 import com.google.api.gax.longrunning.OperationSnapshot;
+import com.google.api.gax.core.BackgroundResource;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.paging.Page;
 import com.google.api.gax.retrying.RetryingFuture;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.StatusCode;
+import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.cloud.ByteArray;
 import com.google.cloud.Date;
 import com.google.cloud.Timestamp;
+import com.google.cloud.spanner.AbortedException;
 import com.google.cloud.spanner.Backup;
 import com.google.cloud.spanner.BackupId;
 import com.google.cloud.spanner.Database;
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
+import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Instance;
 import com.google.cloud.spanner.InstanceAdminClient;
 import com.google.cloud.spanner.InstanceId;
@@ -51,6 +57,8 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TimestampBound;
+import com.google.cloud.spanner.TransactionContext;
+import com.google.cloud.spanner.TransactionManager;
 import com.google.cloud.spanner.Type;
 import com.google.cloud.spanner.Value;
 import com.google.common.io.BaseEncoding;
@@ -63,17 +71,114 @@ import com.google.spanner.admin.database.v1.OptimizeRestoredDatabaseMetadata;
 import com.google.spanner.admin.database.v1.RestoreDatabaseMetadata;
 import com.google.spanner.admin.database.v1.UpdateDatabaseDdlMetadata;
 import com.google.spanner.v1.ExecuteSqlRequest.QueryOptions;
+import io.grpc.ManagedChannel;
+import io.grpc.alts.AltsChannelBuilder;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.threeten.bp.LocalDate;
 import org.threeten.bp.LocalDateTime;
 import org.threeten.bp.OffsetDateTime;
 import org.threeten.bp.temporal.ChronoField;
+
+class DirectPathPointToPointChannelProvider implements TransportChannelProvider {
+
+    private final GrpcTransportChannel transportChannel;
+    private final List<BackgroundResource> backgroundResources;
+
+    public DirectPathPointToPointChannelProvider(String taskVipPort, String serviceName) {
+        // Use AltsChannelBuilder for DirectPath with ALTS
+        ManagedChannel channel = AltsChannelBuilder.forTarget(taskVipPort)
+            .overrideAuthority(serviceName)
+            .build();
+
+        this.transportChannel = GrpcTransportChannel.create(channel);
+        this.backgroundResources = Collections.singletonList(this.transportChannel);
+    }
+
+    @Override
+    public boolean shouldAutoClose() {
+        return true;
+    }
+
+    @Override
+    public GrpcTransportChannel getTransportChannel() {
+        return transportChannel;
+    }
+
+    @Override
+    public String getTransportName() {
+        return GrpcTransportChannel.getGrpcTransportName();
+    }
+
+    @Override
+    public boolean needsCredentials() {
+        return false; // ALTS is handled by the AltsChannelBuilder
+    }
+
+    @Override
+    public TransportChannelProvider withCredentials(com.google.auth.Credentials credentials) {
+        return this; // Ignored, ALTS doesn't use GoogleCredentials in this way
+    }
+
+    @Override
+    public boolean needsExecutor() {
+        return false;
+    }
+
+    @Override
+    public TransportChannelProvider withExecutor(ScheduledExecutorService executor) {
+        return this;
+    }
+
+    @Override
+    public boolean needsHeaders() {
+        return false;
+    }
+
+    @Override
+    public TransportChannelProvider withHeaders(Map<String, String> headers) {
+        return this;
+    }
+
+    @Override
+    public boolean needsEndpoint() {
+        return false;
+    }
+
+    @Override
+    public TransportChannelProvider withEndpoint(String endpoint) {
+        return this; // Endpoint is hardcoded in the constructor
+    }
+
+    @Override
+    public boolean acceptsPoolSize() {
+        return false; // This provider manages a single channel, not a pool
+    }
+
+    @Override
+    public TransportChannelProvider withPoolSize(int size) {
+        if (size > 1) {
+            // Or throw UnsupportedOperationException, as pooling is not supported by this provider
+            System.err.println("WARN: DirectPathPointToPointChannelProvider does not support poolSize > 1. Ignoring.");
+        }
+        return this;
+    }
+
+    @Override
+    public TransportChannelProvider withExecutor(Executor executor) {
+        return this;
+    }
+}
 
 /**
  * Example code for using the Cloud Spanner API. This example demonstrates all the common operations
@@ -2104,8 +2209,39 @@ public class SpannerSample {
       case "deletebackup":
         deleteBackup(dbAdminClient, backup);
         break;
+      case "trailer":
+        trailer(dbClient);
+        break;
       default:
         printUsageAndExit();
+    }
+  }
+
+  static void trailer(DatabaseClient dbClient) {
+    int numRetries = 5;
+    boolean isAbortedWithRetryInfo = false;
+    while (numRetries-- > 0) {
+      try (TransactionManager transactionManager1 = dbClient.transactionManager()) {
+        try (TransactionManager transactionManager2 = dbClient.transactionManager()) {
+          try {
+            String sql =
+                "UPDATE Albums "
+                    + "SET MarketingBudget = MarketingBudget * 2 "
+                    + "WHERE SingerId = 1 and AlbumId = 1";
+            TransactionContext transaction1 = transactionManager1.begin();
+            TransactionContext transaction2 = transactionManager2.begin();
+            transaction1.executeUpdate(Statement.of(sql));
+            transaction2.executeUpdate(Statement.of(sql));
+            transactionManager1.commit();
+            transactionManager2.commit();
+          } catch (AbortedException abortedException) {
+            if (abortedException.getErrorCode() == ErrorCode.ABORTED) {
+              System.out.println("Error code is " + abortedException.getErrorCode());
+              System.out.println("RetryDelayInMillis is " + abortedException.getRetryDelayInMillis());
+            }
+          }
+        }
+      }
     }
   }
 
@@ -2190,7 +2326,15 @@ public class SpannerSample {
       printUsageAndExit();
     }
     // [START init_client]
-    SpannerOptions options = SpannerOptions.newBuilder().build();
+    String taskVipPort = "34.126.0.37:5161";
+    String serviceName = "spanner.googleapis.com";
+    TransportChannelProvider customChannelProvider =
+        new DirectPathPointToPointChannelProvider(taskVipPort, serviceName);
+
+    SpannerOptions options = SpannerOptions.newBuilder()
+      .setHost("https://staging-wrenchworks.sandbox.googleapis.com")
+      //.setChannelProvider(customChannelProvider)
+      .build();
     Spanner spanner = options.getService();
     try {
       String command = args[0];
